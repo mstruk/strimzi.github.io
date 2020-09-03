@@ -15,18 +15,23 @@ Strimzi 0.20.0 introduces some enhancements to address issues around token timeo
 The [OPA blog post](https://strimzi.io/blog/2020/08/05/using-open-policy-agent-with-strimzi-and-apache-kafka/) does a great job describing all the currently supported authorization mechanisms, and basic concepts.
 We'll assume that you have read it and that we have the basics covered.
 
-Keycloak authorization works by adding another layer on top of [OAuth authentication](https://strimzi.io/blog/2019/10/25/kafka-authentication-using-oauth-2.0/). The OAuth authentication is performed during client session initiation, when the OAuth 2.0 access token is received and validated, then stored in session context for possible later use.
+Keycloak authorization works by adding another layer on top of [OAuth authentication](https://strimzi.io/blog/2019/10/25/kafka-authentication-using-oauth-2.0/).
+The OAuth authentication is performed during client session initiation, when the OAuth 2.0 access token is received and validated, then stored in session context for possible later use.
 Keycloak authorization relies on the stored token. It expects that the token was created by the same issuer (the same Keycloak instance or cluster, and the same realm), and that the token is valid.
-The valid token is needed in order to obtain the list of grants for the current session from Keycloak Authorization Services. The valid token is also needed to refresh that list of grants during the session.
+The valid token is needed in order to obtain the list of grants for the current session from Keycloak Authorization Services. The valid token is also needed to regularly refresh that list of grants during the session.
 
-In short, there are two requirements for Keycloak authorization to operate smoothly:
-* OAuth authentication has to be configured - using the same Keycloak backend
+## Preconditions for using 'keycloak' authorization
+
+There are two requirements for Keycloak authorization to operate smoothly:
+* A recent version of Keycloak has to be used (version 9+)
+* OAuth authentication has to be configured for Strimzi Kafka cluster - using the same Keycloak backend as used for authorization
 * Token validity has to be ensured at all times which is achieved by enabling re-authentication
 
 Re-authentication is a functionality provided by Apache Kafka for token-based authentication mechanisms, which allows the client to send a valid new token when the current one expires, and to continue using the already established secure connection, by effectively starting a new authenticated session over the existing connection.
-A special listener configuration option called `maxSecondsWithoutReauthentication`, introduced in Strimzi 0.20.0, is required to enable re-authentication.
+A special listener configuration option called `maxSecondsWithoutReauthentication`, introduced in Strimzi 0.20.0, has to be set in order to enable re-authentication.
 If re-authentication is not activated and Keycloak authorization is used, any operation performed after the access token has expired will result in Kafka client receiving the `org.apache.kafka.common.errors.AuthorizationException`.
-In that situation the client will normally try to reinitialize the `KafkaProducer` / `KafkaConsumer` and continue sending / receiving messages. That kind of recovery is more time consuming, especially with TLS connections, and can represent a highly undesired hiccup in the otherwise smooth flow of message processing.
+In that situation the client will normally try to reinitialize the `KafkaProducer` / `KafkaConsumer` and continue sending / receiving messages.
+That kind of recovery is time consuming, especially with TLS connections, and can represent a highly undesired hiccup in the otherwise smooth flow of message processing.
 
 NOTE: In earlier versions of Strimzi the re-authentication can't be enabled through Kafka CR or any other supported mechanism.
 
@@ -46,7 +51,7 @@ For Kubernetes deployments the Keycloak cluster can be set up using the [Keycloa
 It works by deploying a service that communicates with Kubernetes API server, and acts upon changes in Keycloak custom resource (CR) records created in the Kubernetes API server.
 Based on CR records new clusters of Keycloak are deployed, and populated with realm definitions, users, clients, groups, roles ...
 
-For demo purposes, however, we can deploy a simple Keycloak pod, backed by a database, so it can survive restarts.
+For the demo purposes, however, we can deploy a simple Keycloak pod, backed by a database, so it can survive restarts.
 
 We'll use the following `postgres-pvc.yaml` containing the persistent volume claim for our `postgres` instance:
 
@@ -65,7 +70,7 @@ spec:
       storage: 1Gi
 ```
 
-Then, we'll use the simple stateless pod in `postgres.yaml` for creating the Postgres database instance:
+Then, we'll use a simple stateless pod as defined in the following `postgres.yaml` for creating the Postgres database instance:
 
 ```yaml
 apiVersion: v1
@@ -112,7 +117,7 @@ spec:
       claimName: postgres-pv-claim
 ``` 
 
-We'll deploy Keycloak as a stateless pod as well using the following `keycloak.yaml` for creating the Keycloak Server instance:
+We'll deploy Keycloak as a stateless pod as well using the following `keycloak.yaml` for creating the Keycloak server instance:
 
 ```yaml
 apiVersion: v1
@@ -191,7 +196,7 @@ Deploy 'postgres' using persistent volume:
     kubectl apply -f postgres.yaml
 
 You may want to wait for postgres to start up before deploying Keycloak otherwise Keycloak will fail to start.
-In tht case it will be automatically restarted, but the whole start up procedure will take longer as a result.
+In that case it will be automatically restarted, but the whole start up procedure will take longer as a result.
 
     kubectl logs postgres -f
     
@@ -257,7 +262,7 @@ Let's create a new Client and call it `kafka-cli`.
 
 We need to configure it with `public` 'Access Type' which means that this client can't keep a secret and can't authenticate in its own name.
 Set 'Standard Flow Enabled' to `Off` which disables the default SSO web flow, which we don't need since Kafka client has no web access.
-You may also set 'Direct Access Grants Enabled' to `On` which allows users to use this client with username and password.
+Set 'Direct Access Grants Enabled' to `On` which allows users to use this client with username and password.
 
 ![Configure 'kafka-cli' Client](/assets/images/posts/2020-08-25-keycloak-authz-configure-kafkacli-client.png)
 
@@ -274,7 +279,7 @@ Then click on 'Credentials' tab and set user's password, and make sure to set 'T
 ![Set User Password](/assets/images/posts/2020-08-25-keycloak-authz-set-user-pass.png)
 
 This is enough for user to be able to authenticate.
-Create the other two users as well. We will later assign these three users the 'producer', 'consumer', and 'admin' roles.
+Create the other two users as well. We will later assign these three users the roles.
 
 
 ## Enabling the 'keycloak' authorization in Strimzi
@@ -327,8 +332,7 @@ In our case we could use `https://keycloak:8443` but we would then also need to 
 We could also create the Keycloak server certificate and configure Keycloak with it, but that's even more steps to do.
 If it's a self-signed certificate we would also have to install it into the browser in order to prevent browser from denying us access to Keycloak Admin Console due to 'invalid' certificate.
 Thus, for this example, in order to keep things simple and focus on main concepts of Keycloak Authorization Services, we're not using `https://`.
-Analogously, when using `oauth` authentication we can only guarantee communication integrity if using TLS, and rather than using the `plain` listener, we should be using the `tls` listener.
-  
+Analogously, when using any kibnd of Kafka broker authentication we can only guarantee communication integrity if using TLS, so rather than using the `plain` listener, we should be using the `tls` listener.
 
 An example of a working configuration of a simple Kafka cluster - `kafka-oauth-keycloak.yaml`:
 
@@ -392,7 +396,7 @@ You can apply it by running:
     kubectl apply -f kafka-oauth-keycloak.yaml
     
     
-You can observer the Kafka broker starting up:
+You can observer the Kafka broker starting up once its pod is created by the operator:
 
     kubectl logs -f my-cluster-kafka-0 -f
 
@@ -402,6 +406,8 @@ You can observer the Kafka broker starting up:
 We can run a new pod of strimzi kafka image with an interactive shell:
 
     kubectl run -ti --attach --image strimzi/kafka:latest-kafka-2.6.0 kafka-cli -- /bin/sh
+
+This will show an interactive prompt once its started. The first time it may take a while since the image is fetched from the remote Docker registry.
 
 Let's create a client configuration for a client that will produce some messages.
 
@@ -431,7 +437,7 @@ export TOKEN_ENDPOINT=http://keycloak:8080/auth/realms/strimzi/protocol/openid-c
  REFRESH_TOKEN=$(/tmp/oauth.sh $USERNAME $PASSWORD)
 ```
 
-With the `REFRESH_TOKEN` now set as env variable we can now write out the Kafka client configuration for user 'tom':
+With the `REFRESH_TOKEN` set as env variable we can now write out the Kafka client configuration for user 'tom':
 
 ```
 cat > ~/tom.properties << EOF
@@ -452,7 +458,7 @@ Before running the client we have to ensure the necessary classes are on the cla
 
 ### Producing Messages
 
-Let's try produce some messages to topic 'my-topic':
+Let's try to produce some messages to topic 'my-topic':
 
 ```
 bin/kafka-console-producer.sh --broker-list my-cluster-kafka-bootstrap:9092 --topic my-topic \
@@ -521,7 +527,8 @@ Finally, the `permissions` tie together specific `resources`, `authorization sco
 You can read more about `Keycloak Authorization Services` on [project's web site](https://www.keycloak.org/docs/latest/authorization_services/index.html).
 
 Before defining resources we want to protect, let's explain the resource naming format required by Strimzi 'keycloak' authorization.
-The name of every resource is not only a logical name, but rather a resource filter. It is a matching pattern used to determine if the resource definition applies to the Kafka resource targeted by Kafka client operation.
+The name of every resource is not only a logical name, but rather a resource filter.
+It is a matching pattern used to select the set of resources to which to apply particular policies and permissions.
 
 The format is quite simple. For example:
 
@@ -547,7 +554,7 @@ Each `permission` definition should have a nice descriptive name to make it very
 
 For example:
     
-    Dev Team A can write to topics that start with x_ on any cluster
+    Dev Team A can write to topics that start with x_ on cluster dev-cluster
     
 Let's create some user groups and grant different permissions to different users.
 
@@ -561,7 +568,7 @@ For our example we want three groups of users: 'Invoicing', 'Marketing', and 'Or
 ![Create Group](/assets/images/posts/2020-08-25-keycloak-authz-create-group.png)
 ![Groups](/assets/images/posts/2020-08-25-keycloak-authz-groups.png)
 
-Let's add users 'tom', and 'jack' to the 'Orders' group.
+Let's add user 'tom' to the 'Orders' group, and 'jack' to the 'Invoicing' group.
 
 We do that by editing each user within 'Users' section, selecting the groups under 'Groups' tab, and using 'Join' button.
 
@@ -572,7 +579,7 @@ We do that by editing each user within 'Users' section, selecting the groups und
 
 Roles are a concept analogous to groups. In principle either can be used for grouping and tagging users. 
 The roles are usually used to 'tag' users as playing organisational roles and having permissions that pertain to their roles.
-
+ 
 For our example we want three types of users, each type represented by a role. 
 Let's create three roles: 'Producer', 'Consumer', and 'Admin' by using 'Roles' page.
 
@@ -580,40 +587,48 @@ Let's create three roles: 'Producer', 'Consumer', and 'Admin' by using 'Roles' p
 
 ![Realm Roles](/assets/images/posts/2020-08-25-keycloak-authz-roles.png)
 
-Let's give user 'tom' the 'Producer' role, user 'jack' the 'Consumer' role, and user 'dean' the 'Admin' role.
+Let's give user 'tom' the 'Producer' and 'Consumer' roles, user 'jack' the 'Consumer' role, and user 'dean' the 'Admin' role.
 
 We do that by editing each user within 'Users' section, selecting and adding the roles under the 'Role Mappings' tab.
 
 ![Assign Roles](/assets/images/posts/2020-08-25-keycloak-authz-assign-role.png)
+![Assign Roles](/assets/images/posts/2020-08-25-keycloak-authz-assigned-roles.png)
 
+#### Creating topics
 
-#### Targetting permissions
- 
-Let's say we have 'new-order' topic which accounts in 'invoicing' and 'marketing' groups can consume from as long as they are also members of 'consumers', 
-and accounts in 'orders' group can produce to as long as they are also 'producers'.
+We still need to create topics to represent the queues, and we can then start granting permissions.
 
-Let's say we have 'processed-order' topic which accounts in 'invoicing' can produce to as long as they are also 'producers', and the accounts in 'marketing' can read from as long as they are also 'consumers'. 
+In `Authorization` we create a new resource called `Topic:new-orders`.
 
-Only accounts with 'admin' role can create and configure the topics.
- 
-Let's say we also have the 'payment-processing' service account, that's a member of 'invoicing' group, and also has 'producer' and 'consumer' roles.
+![Create 'new-orders' Topic Resource](/assets/images/posts/2020-08-25-keycloak-authz-new-topic-resource-new-orders.png)
 
-In `Authorization` we create a new resource called `Topic:new-order`.
+And another one called `Group:new-orders`.
 
-![Create 'new-order' Topic Resource](/assets/images/posts/2020-08-25-keycloak-authz-new-topic-resource-new-order.png)
-
-And another one called `Group:new-order`.
-
-![Create 'new-order' Group Resource](/assets/images/posts/2020-08-25-keycloak-authz-new-group-resource-new-order.png)
+![Create 'new-orders' Group Resource](/assets/images/posts/2020-08-25-keycloak-authz-new-group-resource-new-orders.png)
 
 We add all the relevant `authorization scopes` to each resource. 
 For topics these are `Create`, `Delete`, `Describe`, `Write`, `Read`, `Alter`, `DescribeConfigs`, `AlterConfigs`.
 For groups these are `Describe`, `Read`, `Delete`, `DescribeConfigs`, `AlterConfigs`.
 
-Ideally we could declare resource type `Topic` and the possible `authorization scopes` would be added based on type definition.
+Ideally we could declare resource type `Topic` and the possible `authorization scopes` would automatically be added based on type definition.
 Currently there is no such facility.
 
-We now have the resources to target authorization rules, next we need a way to target these resources based on Role and Group.
+Let's make another pair: `Topic:processed-orders`, `Group:orders-*`
+
+
+#### Targetting permissions
+
+Imagine the following business process. An automated system enters a new order into 'new-orders' queue.
+A person from Orders department takes the order from the queue, fulfills it, and writes it into 'processed-orders' queue.
+Then a person from Invoices department takes an order from 'processed-orders', and prepares invoices for it.
+ 
+We want people from Orders department to only have access to their queues, and similarly for people from Invoices department.
+
+We've already prepared users, to model the people, and groups to model the departments.
+We have prepared roles to give different levels of access to people within departments - 'Producers' can add to topics, 'Consumers' can only read from topics, and 'Admins' can create and configure the topics.    
+
+We have also created the resources to target authorization rules, next we need to target these resources based on roles and groups.
+
 
 We use `Policies` tab to map realm Groups, and realm Roles into authorization services for targeting.
 
@@ -627,13 +642,28 @@ And a 'Group' policy called 'Is member of Orders group'
 
 ![Create 'Is member of Orders group' Policy](/assets/images/posts/2020-08-25-keycloak-authz-group-policy.png)
 
-We can now create a scope-based permission under 'Permissions' tab, and give it a very descriptive name 'Accounts with Producer role and Orders group can produce to 'new-order' topic'.
+We can now create a scope-based permission under 'Permissions' tab, and give it a very descriptive name: 'Accounts with Producer role and Orders group can produce to 'new-orders' topic'.
 
 ![Add permission to produce](/assets/images/posts/2020-08-25-keycloak-authz-add-permissions.png)
 
-User 'tom' should now be able to produce to 'new-order' topic.
+User 'tom' should now be able to produce to 'new-orders' topic.
+
+Let's test that.
+
+```
+bin/kafka-console-producer.sh --broker-list my-cluster-kafka-bootstrap:9092 --topic new-orders \
+  --producer.config=$HOME/tom.properties
+First message
+```
 
 
+TODO (find a place): 
+But if you think about it - this way of 'tagging' users through groups and roles is a very simple model.
+Adding a role or a group to the user is just like adding a tag without any logical operators.
+As a result we can't make the user a 'Producer' in the 'Orders' group, while only a 'Consumer', but not a 'Producer' in the 'Invoices' group without a special 'tag' for it.
+For that we would need 'tags' like 'orders_producer', 'invoices_consumer'. But that quickly becomes hard to maintain.
+
+This is where Authorization Services come to the rescue, since they allow creating composite conditional rules to target permissions to sets of users. 
 
 
 
